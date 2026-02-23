@@ -1,0 +1,35 @@
+# User Authentication Configuration
+# Password hashes are generated using Argon2id
+# Use `pop3ctl hash-password` to generate new hashes
+
+[[users]]
+username = "alice"
+domain = "example.com"
+# Example hash for password "secret" - CHANGE IN PRODUCTION
+password_hash = "$argon2id$v=19$m=19456,t=2,p=1$EXAMPLE_SALT$EXAMPLE_HASH"
+maildir = "/var/mail/example.com/alice"
+storage = "maildir"
+webhook_url = "https://example.com/webhook/alice"
+webhook_events = ["session_start", "session_end", "command_retr", "command_dele"]
+enabled = true
+
+[users.imap_forward]
+enabled = false
+host = "imap.gmail.com"
+port = 993
+tls = true
+username = "alice@gmail.com"
+password_env = "ALICE_IMAP_PASSWORD"
+target_folder = "INBOX"
+delete_after_forward = false
+
+[[users]]
+username = "bob"
+domain = "example.com"
+password_hash = "$argon2id$v=19$m=19456,t=2,p=1$EXAMPLE_SALT$EXAMPLE_HASH"
+storage = "s3"
+s3_bucket = "mail-bucket"
+s3_prefix = "bob/"
+webhook_url = ""
+webhook_events = []
+enabled = true

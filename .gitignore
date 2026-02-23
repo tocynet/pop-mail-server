@@ -1,0 +1,48 @@
+# Rust
+/target/
+# Note: Cargo.lock is committed for reproducible builds
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# TLS certificates (keep examples, ignore real ones)
+certs/*.crt
+certs/*.key
+certs/*.pem
+!certs/.gitkeep
+!certs/README.md
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Maildir data
+/maildir/
+/var/
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform.lock.hcl
+
+# Temporary files
+*.tmp
+*.bak
+
+# Coverage
+*.profraw
+*.profdata
+coverage/

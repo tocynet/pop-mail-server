@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  pop3-server:
+    build: .
+    container_name: pop3-server
+    ports:
+      - "995:995"   # POP3 over TLS
+      - "8080:8080" # Management API
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./users.toml:/app/users.toml:ro
+      - ./certs:/app/certs:ro
+      - ./domains:/app/domains:ro
+      - maildir:/var/mail
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  maildir:
+    driver: local

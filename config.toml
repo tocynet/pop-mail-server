@@ -1,0 +1,33 @@
+# POP3 Server Configuration
+
+[server]
+bind_address = "0.0.0.0:995"
+max_connections = 100
+
+[tls]
+cert_path = "certs/server.crt"
+key_path = "certs/server.key"
+
+[security]
+command_timeout_secs = 30
+idle_timeout_secs = 300
+max_command_length = 1000
+rate_limit_per_second = 10
+max_auth_attempts = 5
+
+[storage]
+default_type = "maildir"
+maildir_base = "/var/mail"
+
+[storage.s3]
+region = "ap-northeast-1"
+endpoint = ""  # Custom endpoint for MinIO, etc.
+
+[webhook]
+timeout_secs = 10
+retry_count = 3
+
+[api]
+enabled = true
+bind_address = "127.0.0.1:8080"
+api_key = "your-secret-api-key"

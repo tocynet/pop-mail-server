@@ -1,0 +1,11 @@
+# Domain configuration for example.com
+
+[domain]
+name = "example.com"
+enabled = true
+default_storage = "maildir"
+maildir_base = "/var/mail/example.com"
+
+[tls]
+cert_path = "certs/example.com.crt"
+key_path = "certs/example.com.key"
