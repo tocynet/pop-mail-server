@@ -10,8 +10,9 @@ Rustで実装されたセキュアなPOP3メール受信サーバー。
 - **バーチャルホスト**: 複数ドメイン対応 (`user@domain`形式)
 - **Webhook**: 全コマンドの通知機能
 - **IMAP転送**: 受信メールのIMAP自動転送
-- **管理API**: REST APIによるドメイン/ユーザー管理
+- **管理API**: REST APIによるドメイン/ユーザー管理（自動永続化）
 - **CLI**: `pop3ctl`コマンドラインツール
+- **ホットリロード**: `users.toml`の変更を自動検知・反映（再起動不要）
 
 ## クイックスタート
 
@@ -98,6 +99,44 @@ storage = "maildir"
 webhook_url = "https://example.com/webhook/alice"
 enabled = true
 ```
+
+## ユーザー管理（オンライン編集）
+
+サーバー起動中でも、以下の2つの方法でユーザー設定を変更できます。
+
+### 方法1: REST API（推奨）
+
+```bash
+# ユーザー追加
+curl -X POST -H "X-API-Key: your-key" -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"secret123"}' \
+  http://localhost:8080/api/v1/domains/example.com/users
+
+# ユーザー更新（パスワード変更、無効化など）
+curl -X PUT -H "X-API-Key: your-key" -H "Content-Type: application/json" \
+  -d '{"password":"newpassword","enabled":true}' \
+  http://localhost:8080/api/v1/domains/example.com/users/alice
+
+# ユーザー削除
+curl -X DELETE -H "X-API-Key: your-key" \
+  http://localhost:8080/api/v1/domains/example.com/users/alice
+```
+
+API経由の変更は自動的に`users.toml`に保存されます。
+
+### 方法2: ファイル直接編集（ホットリロード）
+
+```bash
+# users.tomlを直接編集
+vim users.toml
+# 保存すると自動的にサーバーに反映されます（再起動不要）
+```
+
+### 整合性の保証
+
+- **API → ファイル**: 変更後500ms以内に自動保存
+- **ファイル → メモリ**: 変更検知後100msでリロード
+- **自己トリガー防止**: API保存直後のファイル変更は無視（二重リロード防止）
 
 ## CLI (pop3ctl)
 

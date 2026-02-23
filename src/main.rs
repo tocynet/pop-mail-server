@@ -65,6 +65,18 @@ async fn main() -> anyhow::Result<()> {
     info!("Loading users from {}", cli.users);
     let auth_store = Arc::new(AuthStore::load(&cli.users).await?);
 
+    // Start file watcher for hot-reload
+    let _watcher_stop = match auth_store.start_watcher() {
+        Ok(stop_tx) => {
+            info!("Users file watcher started - changes will be hot-reloaded");
+            Some(stop_tx)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to start users file watcher: {}", e);
+            None
+        }
+    };
+
     // Create virtual host router
     let vhost_router = Arc::new(VirtualHostRouter::new(&config)?);
 

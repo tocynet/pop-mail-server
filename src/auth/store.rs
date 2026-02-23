@@ -1,11 +1,15 @@
 //! User authentication store
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
+use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
+use tracing::{debug, error, info, warn};
 
 use crate::auth::password::PasswordHasher;
 
@@ -108,10 +112,19 @@ struct UsersFile {
     users: Vec<User>,
 }
 
-/// Authentication store
+/// Duration to ignore file changes after saving (to prevent self-triggered reload)
+const SAVE_DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
+
+/// Authentication store with auto-save and hot-reload support
 pub struct AuthStore {
     users: RwLock<HashMap<String, User>>,
     hasher: PasswordHasher,
+    /// Path to the users file (for auto-save and hot-reload)
+    file_path: Option<PathBuf>,
+    /// Timestamp of last save (for self-trigger prevention)
+    last_save_time: RwLock<Option<Instant>>,
+    /// Flag to temporarily disable auto-save (during reload)
+    save_disabled: AtomicBool,
 }
 
 impl AuthStore {
@@ -120,12 +133,16 @@ impl AuthStore {
         Self {
             users: RwLock::new(HashMap::new()),
             hasher: PasswordHasher::new(),
+            file_path: None,
+            last_save_time: RwLock::new(None),
+            save_disabled: AtomicBool::new(false),
         }
     }
 
     /// Load users from a TOML file
     pub async fn load<P: AsRef<Path>>(path: P) -> Result<Self, AuthError> {
-        let content = std::fs::read_to_string(path)?;
+        let path_buf = path.as_ref().to_path_buf();
+        let content = std::fs::read_to_string(&path_buf)?;
         let users_file: UsersFile = toml::from_str(&content)?;
 
         let mut users_map = HashMap::new();
@@ -134,10 +151,157 @@ impl AuthStore {
             users_map.insert(key, user);
         }
 
+        info!("Loaded {} users from {:?}", users_map.len(), path_buf);
+
         Ok(Self {
             users: RwLock::new(users_map),
             hasher: PasswordHasher::new(),
+            file_path: Some(path_buf),
+            last_save_time: RwLock::new(None),
+            save_disabled: AtomicBool::new(false),
         })
+    }
+
+    /// Reload users from the file (for hot-reload)
+    pub async fn reload(&self) -> Result<(), AuthError> {
+        let path = match &self.file_path {
+            Some(p) => p.clone(),
+            None => {
+                warn!("Cannot reload: no file path configured");
+                return Ok(());
+            }
+        };
+
+        // Check if this is a self-triggered reload (we just saved)
+        {
+            let last_save = self.last_save_time.read().await;
+            if let Some(save_time) = *last_save {
+                if save_time.elapsed() < SAVE_DEBOUNCE_DURATION {
+                    debug!("Ignoring reload triggered by our own save");
+                    return Ok(());
+                }
+            }
+        }
+
+        info!("Reloading users from {:?}", path);
+
+        let content = std::fs::read_to_string(&path)?;
+        let users_file: UsersFile = toml::from_str(&content)?;
+
+        let mut users_map = HashMap::new();
+        for user in users_file.users {
+            let key = Self::make_key(&user.username, &user.domain);
+            users_map.insert(key, user);
+        }
+
+        // Replace users atomically
+        {
+            let mut users = self.users.write().await;
+            *users = users_map;
+        }
+
+        info!("Reloaded {} users", self.users.read().await.len());
+        Ok(())
+    }
+
+    /// Auto-save to file if file_path is configured
+    async fn auto_save(&self) -> Result<(), AuthError> {
+        if self.save_disabled.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        if let Some(path) = &self.file_path {
+            self.save(path).await?;
+            // Update last save time for self-trigger prevention
+            let mut last_save = self.last_save_time.write().await;
+            *last_save = Some(Instant::now());
+            debug!("Auto-saved users to {:?}", path);
+        }
+        Ok(())
+    }
+
+    /// Start file watcher for hot-reload
+    /// Returns a channel sender that can be used to stop the watcher
+    pub fn start_watcher(
+        self: &std::sync::Arc<Self>,
+    ) -> Result<mpsc::Sender<()>, AuthError> {
+        let path = match &self.file_path {
+            Some(p) => p.clone(),
+            None => {
+                return Err(AuthError::ReadError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No file path configured for watching",
+                )));
+            }
+        };
+
+        let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
+        let (event_tx, mut event_rx) = mpsc::channel::<()>(16);
+
+        // Create file watcher
+        let event_tx_clone = event_tx.clone();
+        let path_clone = path.clone();
+        let mut watcher = RecommendedWatcher::new(
+            move |res: Result<notify::Event, notify::Error>| {
+                match res {
+                    Ok(event) => {
+                        if event.kind.is_modify() || event.kind.is_create() {
+                            debug!("File change detected: {:?}", event);
+                            let _ = event_tx_clone.try_send(());
+                        }
+                    }
+                    Err(e) => {
+                        error!("File watcher error: {}", e);
+                    }
+                }
+            },
+            NotifyConfig::default(),
+        )
+        .map_err(|e| {
+            AuthError::ReadError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to create file watcher: {}", e),
+            ))
+        })?;
+
+        watcher
+            .watch(&path, RecursiveMode::NonRecursive)
+            .map_err(|e| {
+                AuthError::ReadError(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to watch file: {}", e),
+                ))
+            })?;
+
+        info!("Started file watcher for {:?}", path);
+
+        // Spawn watcher task
+        let store = std::sync::Arc::clone(self);
+        tokio::spawn(async move {
+            // Keep watcher alive
+            let _watcher = watcher;
+
+            loop {
+                tokio::select! {
+                    _ = stop_rx.recv() => {
+                        info!("Stopping file watcher for {:?}", path_clone);
+                        break;
+                    }
+                    Some(_) = event_rx.recv() => {
+                        // Debounce: wait a bit for multiple rapid changes
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        // Drain any additional events
+                        while event_rx.try_recv().is_ok() {}
+
+                        if let Err(e) = store.reload().await {
+                            error!("Failed to reload users: {}", e);
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(stop_tx)
     }
 
     /// Make a lookup key from username and domain
@@ -191,16 +355,30 @@ impl AuthStore {
         self.users.read().await.get(&key).cloned()
     }
 
-    /// Add or update a user
+    /// Add or update a user (auto-saves to file)
     pub async fn upsert_user(&self, user: User) {
         let key = Self::make_key(&user.username, &user.domain);
         self.users.write().await.insert(key, user);
+
+        // Auto-save to file
+        if let Err(e) = self.auto_save().await {
+            error!("Failed to auto-save after upsert: {}", e);
+        }
     }
 
-    /// Remove a user
+    /// Remove a user (auto-saves to file)
     pub async fn remove_user(&self, username: &str, domain: &str) -> Option<User> {
         let key = Self::make_key(username, domain);
-        self.users.write().await.remove(&key)
+        let removed = self.users.write().await.remove(&key);
+
+        // Auto-save to file if user was removed
+        if removed.is_some() {
+            if let Err(e) = self.auto_save().await {
+                error!("Failed to auto-save after remove: {}", e);
+            }
+        }
+
+        removed
     }
 
     /// List all users
@@ -222,10 +400,25 @@ impl AuthStore {
 
     /// Save users to a TOML file
     pub async fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), AuthError> {
-        let users: Vec<User> = self.users.read().await.values().cloned().collect();
+        let mut users: Vec<User> = self.users.read().await.values().cloned().collect();
+        // Sort for consistent output
+        users.sort_by(|a, b| {
+            (&a.domain, &a.username).cmp(&(&b.domain, &b.username))
+        });
         let users_file = UsersFile { users };
-        let content = toml::to_string_pretty(&users_file)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+        // Add header comment
+        let mut content = String::from(
+            "# User Authentication Configuration\n\
+             # Password hashes are generated using Argon2id\n\
+             # Use `pop3ctl hash-password` to generate new hashes\n\
+             # This file is auto-managed by the server - manual edits will be hot-reloaded\n\n",
+        );
+        content.push_str(
+            &toml::to_string_pretty(&users_file)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?,
+        );
+
         std::fs::write(path, content)?;
         Ok(())
     }
@@ -243,6 +436,9 @@ impl Default for AuthStore {
         Self::new()
     }
 }
+
+/// Re-export for convenience
+pub use notify;
 
 #[cfg(test)]
 mod tests {
