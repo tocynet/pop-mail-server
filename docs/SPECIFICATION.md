@@ -8,7 +8,7 @@ Rustで実装されたセキュアなPOP3メール受信サーバー。個人や
 
 ### 1. 個人メールサーバー
 - 独自ドメインでのメール受信
-- Oracle Cloud Free Tier等の無料VPSでの運用
+- VPS/クラウドでの運用
 - Gmail等への自動転送
 
 ### 2. スタートアップ/小規模チーム
@@ -285,9 +285,9 @@ password_env = "ALICE_IMAP_PASSWORD"
 
 | 環境 | スペック | 月額 |
 |------|---------|------|
-| Oracle Cloud Free Tier | ARM 4コア, 24GB RAM | 無料 |
 | AWS Lightsail | 1vCPU, 1GB RAM | $5〜 |
 | DigitalOcean | 1vCPU, 1GB RAM | $6〜 |
+| Vultr | 1vCPU, 1GB RAM | $6〜 |
 
 ### 必要ポート
 

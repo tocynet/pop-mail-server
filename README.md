@@ -211,9 +211,9 @@ QUIT
 
 ## デプロイ
 
-### Oracle Cloud Free Tier（推奨）
+### VPS/クラウドへのデプロイ
 
-1. ARM VMインスタンスを作成
+1. VMインスタンスを作成
 2. ポート995, 8080を開放
 3. Dockerをインストール
 4. 本番用TLS証明書を設定（Let's Encrypt推奨）
